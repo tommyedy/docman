@@ -27,27 +27,23 @@ use Symfony\Component\VarDumper\Server\Connection;
 /**
  * @author Nicolas Grekas <p@tchwork.com>
  *
- * @final since Symfony 4.3
+ * @final
  */
 class DumpDataCollector extends DataCollector implements DataDumperInterface
 {
-    private $stopwatch;
-    private $fileLinkFormat;
-    private $dataCount = 0;
-    private $isCollected = true;
-    private $clonesCount = 0;
-    private $clonesIndex = 0;
-    private $rootRefs;
-    private $charset;
+    private $stopwatch = null;
+    private string|FileLinkFormatter|false $fileLinkFormat;
+    private int $dataCount = 0;
+    private bool $isCollected = true;
+    private int $clonesCount = 0;
+    private int $clonesIndex = 0;
+    private array $rootRefs;
+    private string $charset;
     private $requestStack;
     private $dumper;
-    private $sourceContextProvider;
+    private mixed $sourceContextProvider;
 
-    /**
-     * @param string|FileLinkFormatter|null       $fileLinkFormat
-     * @param DataDumperInterface|Connection|null $dumper
-     */
-    public function __construct(Stopwatch $stopwatch = null, $fileLinkFormat = null, string $charset = null, RequestStack $requestStack = null, $dumper = null)
+    public function __construct(Stopwatch $stopwatch = null, string|FileLinkFormatter $fileLinkFormat = null, string $charset = null, RequestStack $requestStack = null, DataDumperInterface|Connection $dumper = null)
     {
         $this->stopwatch = $stopwatch;
         $this->fileLinkFormat = $fileLinkFormat ?: ini_get('xdebug.file_link_format') ?: get_cfg_var('xdebug.file_link_format');
@@ -100,19 +96,14 @@ class DumpDataCollector extends DataCollector implements DataDumperInterface
         }
     }
 
-    /**
-     * {@inheritdoc}
-     *
-     * @param \Throwable|null $exception
-     */
-    public function collect(Request $request, Response $response/*, \Throwable $exception = null*/)
+    public function collect(Request $request, Response $response, \Throwable $exception = null)
     {
         if (!$this->dataCount) {
             $this->data = [];
         }
 
         // Sub-requests and programmatic calls stay in the collected profile.
-        if ($this->dumper || ($this->requestStack && $this->requestStack->getMasterRequest() !== $request) || $request->isXmlHttpRequest() || $request->headers->has('Origin')) {
+        if ($this->dumper || ($this->requestStack && $this->requestStack->getMainRequest() !== $request) || $request->isXmlHttpRequest() || $request->headers->has('Origin')) {
             return;
         }
 
@@ -120,11 +111,11 @@ class DumpDataCollector extends DataCollector implements DataDumperInterface
         if (!$this->requestStack
             || !$response->headers->has('X-Debug-Token')
             || $response->isRedirection()
-            || ($response->headers->has('Content-Type') && false === strpos($response->headers->get('Content-Type'), 'html'))
+            || ($response->headers->has('Content-Type') && !str_contains($response->headers->get('Content-Type'), 'html'))
             || 'html' !== $request->getRequestFormat()
             || false === strripos($response->getContent(), '</body>')
         ) {
-            if ($response->headers->has('Content-Type') && false !== strpos($response->headers->get('Content-Type'), 'html')) {
+            if ($response->headers->has('Content-Type') && str_contains($response->headers->get('Content-Type'), 'html')) {
                 $dumper = new HtmlDumper('php://output', $this->charset);
                 $dumper->setDisplayOptions(['fileLinkFormat' => $this->fileLinkFormat]);
             } else {
@@ -183,16 +174,21 @@ class DumpDataCollector extends DataCollector implements DataDumperInterface
         $charset = array_pop($this->data);
         $fileLinkFormat = array_pop($this->data);
         $this->dataCount = \count($this->data);
+        foreach ($this->data as $dump) {
+            if (!\is_string($dump['name']) || !\is_string($dump['file']) || !\is_int($dump['line'])) {
+                throw new \BadMethodCallException('Cannot unserialize '.__CLASS__);
+            }
+        }
 
         self::__construct($this->stopwatch, \is_string($fileLinkFormat) || $fileLinkFormat instanceof FileLinkFormatter ? $fileLinkFormat : null, \is_string($charset) ? $charset : null);
     }
 
-    public function getDumpsCount()
+    public function getDumpsCount(): int
     {
         return $this->dataCount;
     }
 
-    public function getDumps($format, $maxDepthLimit = -1, $maxItemsPerDepth = -1)
+    public function getDumps(string $format, int $maxDepthLimit = -1, int $maxItemsPerDepth = -1): array
     {
         $data = fopen('php://memory', 'r+');
 
@@ -219,7 +215,7 @@ class DumpDataCollector extends DataCollector implements DataDumperInterface
         return $dumps;
     }
 
-    public function getName()
+    public function getName(): string
     {
         return 'dump';
     }
@@ -257,7 +253,7 @@ class DumpDataCollector extends DataCollector implements DataDumperInterface
         }
     }
 
-    private function doDump(DataDumperInterface $dumper, $data, string $name, string $file, int $line)
+    private function doDump(DataDumperInterface $dumper, Data $data, string $name, string $file, int $line)
     {
         if ($dumper instanceof CliDumper) {
             $contextDumper = function ($name, $file, $line, $fmt) {
